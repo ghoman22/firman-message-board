@@ -1,0 +1,10 @@
+.git
+.github
+infra
+k8s
+gitops
+scripts
+monitoring
+README.md
+main_test.go
+*.pdf

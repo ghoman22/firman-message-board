@@ -1,0 +1,106 @@
+name: CI and GitOps delivery
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "k8s/overlays/prod/kustomization.yaml"
+      - "k8s/overlays/ec2/kustomization.yaml"
+      - "k8s/overlays/openshift/kustomization.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive infra
+      - run: terraform -chdir=infra/terraform init -backend=false -input=false
+      - run: terraform -chdir=infra/terraform validate
+      - run: terraform -chdir=infra/terraform-ec2-kubeadm init -backend=false -input=false
+      - run: terraform -chdir=infra/terraform-ec2-kubeadm validate
+      - run: bash -n scripts/install-kubeadm-node.sh
+      - run: terraform -chdir=infra/terraform-registry init -backend=false -input=false
+      - run: terraform -chdir=infra/terraform-registry validate
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: go test -race ./...
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test container
+        run: |
+          docker build -t message-board:ci .
+          docker run -d --name message-board-ci -p 8080:8080 message-board:ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker logs message-board-ci
+          exit 1
+
+  publish:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    needs: [terraform-validate, test, docker-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    concurrency:
+      group: firman-gitops-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Check ECR configuration
+        env:
+          ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
+          AWS_ECR_PUSH_ROLE_ARN: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+        run: |
+          if [[ -z "$ECR_REPOSITORY_URL" || -z "$AWS_ECR_PUSH_ROLE_ARN" ]]; then
+            echo "Set ECR_REPOSITORY_URL and AWS_ECR_PUSH_ROLE_ARN before publishing."
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ap-southeast-3
+      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push image to ECR
+        env:
+          ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
+        run: |
+          docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" -t message-board:release .
+          docker tag message-board:release "${ECR_REPOSITORY_URL}:${GITHUB_SHA}"
+          docker push "${ECR_REPOSITORY_URL}:${GITHUB_SHA}"
+      - name: Update GitOps image references
+        env:
+          ECR_REPOSITORY_URL: ${{ vars.ECR_REPOSITORY_URL }}
+        run: |
+          git fetch origin main
+          git rebase origin/main
+          python3 scripts/update-image.py --target openshift --repository-url "$ECR_REPOSITORY_URL" --tag "$GITHUB_SHA"
+          python3 scripts/update-image.py --target ec2 --repository-url "$ECR_REPOSITORY_URL" --tag "$GITHUB_SHA"
+          python3 scripts/update-image.py --target eks --repository-url "$ECR_REPOSITORY_URL" --tag "$GITHUB_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/overlays/prod/kustomization.yaml k8s/overlays/ec2/kustomization.yaml k8s/overlays/openshift/kustomization.yaml
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "gitops: deploy ${GITHUB_SHA}"
+          git push origin HEAD:main

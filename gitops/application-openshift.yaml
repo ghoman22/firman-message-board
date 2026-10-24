@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: message-board-openshift
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/REPLACE_OWNER/REPLACE_REPO.git
+    targetRevision: main
+    path: k8s/overlays/openshift
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: firman-demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,4 @@
+github_repository = "YOUR_GITHUB_USERNAME/YOUR_REPO"
+aws_region        = "ap-southeast-3"
+# Jika akun sudah punya GitHub OIDC provider:
+# existing_github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
