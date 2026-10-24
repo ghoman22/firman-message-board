@@ -66,6 +66,30 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+  - name: Diagnose OIDC claims
+    shell: bash
+    run: |
+      python3 - <<'PY'
+      import os, json, base64, urllib.request
+
+      url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+      token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+
+      req = urllib.request.Request(
+          url + ("&" if "?" in url else "?") + "audience=sts.amazonaws.com",
+          headers={"Authorization": f"Bearer {token}"}
+      )
+
+      with urllib.request.urlopen(req) as response:
+          jwt = json.load(response)["value"]
+
+      payload = jwt.split(".")[1]
+      payload += "=" * (-len(payload) % 4)
+      claims = json.loads(base64.urlsafe_b64decode(payload))
+
+      for key in ("iss", "aud", "sub", "repository", "ref", "event_name"):
+          print(f"{key}: {claims.get(key)}")
+      PY
         with:
           persist-credentials: true
       - name: Check ECR configuration
