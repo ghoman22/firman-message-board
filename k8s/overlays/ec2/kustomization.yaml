@@ -6,6 +6,6 @@ resources:
 images:
   - name: message-board
     newName: 582995372164.dkr.ecr.ap-southeast-3.amazonaws.com/firman-message-demo
-    newTag: 0175bff33f959718a7dca4f76e18b12ba721899c
+    newTag: 43bc7416cd9f29c4395783c3215983a357627d97
 patches:
   - path: image-pull-secret.yaml
